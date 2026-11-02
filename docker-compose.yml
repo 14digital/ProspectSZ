@@ -17,8 +17,6 @@ services:
   api:
     build:
       context: ./services/api
-      secrets:
-        - proxy_ca
     env_file: .env
     environment:
       UPLOAD_DIR: /data/uploads
@@ -39,8 +37,6 @@ services:
   worker:
     build:
       context: ./services/api
-      secrets:
-        - proxy_ca
     command: ["python", "-m", "worker.main"]
     env_file: .env
     environment:
@@ -55,8 +51,6 @@ services:
   web:
     build:
       context: ./apps/web
-      secrets:
-        - proxy_ca
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
     environment:
@@ -72,6 +66,3 @@ volumes:
   postgres_data:
   app_data:
 
-secrets:
-  proxy_ca:
-    file: ${CODEX_PROXY_CERT:-/etc/ssl/certs/ca-certificates.crt}

@@ -3,8 +3,12 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements.txt .
-RUN --mount=type=secret,id=proxy_ca,required=true \
-    PIP_CERT=/run/secrets/proxy_ca pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=secret,id=proxy_ca,required=false \
+    if [ -s /run/secrets/proxy_ca ]; then \
+      PIP_CERT=/run/secrets/proxy_ca pip install --no-cache-dir -r requirements.txt; \
+    else \
+      pip install --no-cache-dir -r requirements.txt; \
+    fi
 COPY . .
 RUN useradd --system --uid 10001 app && mkdir -p /data/uploads && chown -R app:app /data /app
 USER app
