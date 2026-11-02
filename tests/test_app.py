@@ -15,7 +15,7 @@ class AppTests(unittest.TestCase):
             app = AppTest.from_file("app.py").run()
             self.assertFalse(app.exception)
             self.assertEqual(app.title[0].value, "Command centre")
-            self.assertTrue(any(widget.label == "Google API key" for widget in app.text_input))
+            self.assertTrue(any("manual review mode" in item.value for item in app.markdown))
             for page in ["Discover & import", "Research & enrich", "Approval queue", "Export & audit"]:
                 app.sidebar.radio[0].set_value(page).run()
                 self.assertFalse(app.exception, page)

@@ -6,14 +6,11 @@ from urllib.parse import quote_plus
 import streamlit as st
 
 from prospectsz.pipeline import (PipelineError, WebReader, discover, draft, eligible,
-                                 export_csv, handoff, import_csv, research,
+                                 export_csv, handoff, import_csv, import_quick_list, research,
                                  is_directory_url, rank, research_csv, run_batch, RESEARCH_FIELDS)
 from prospectsz.store import Store
 
 st.set_page_config(page_title="ProspectSZ · 14Digital", page_icon="◈", layout="wide")
-
-DEFAULT_GOOGLE_SEARCH_ENGINE_ID = "86e430f9380d94ea2"
-
 
 def key(name):
     value = os.getenv(name, "")
@@ -25,10 +22,6 @@ def key(name):
             return value
     except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
         pass
-    if name == "GOOGLE_SEARCH_API_KEY":
-        return st.session_state.get("google_api_key_session", "")
-    if name == "GOOGLE_SEARCH_ENGINE_ID":
-        return DEFAULT_GOOGLE_SEARCH_ENGINE_ID
     return ""
 
 
@@ -40,11 +33,8 @@ with st.sidebar:
     page = st.radio("Workspace", ["Command centre", "Discover & import", "Research & enrich", "Approval queue", "Export & audit"])
     st.divider()
     st.caption("UK regulated care · 50–250 employees")
-    st.text_input("Google API key", type="password", key="google_api_key_session",
-                  help="Used only for this browser session and sent only to Google's Custom Search API.")
-    google_ready = bool(key("GOOGLE_SEARCH_API_KEY") and key("GOOGLE_SEARCH_ENGINE_ID"))
-    st.write("Google Search: " + ("configured" if google_ready else "manual mode"))
-    st.caption("The session key is not written to the database or repository. Environment secrets remain supported.")
+    st.write("Google Search: manual review mode")
+    st.caption("No Google API key is required or stored.")
 
 st.title(page)
 st.caption("From public business research to thoughtful outreach — every message reviewed by a person.")
@@ -90,21 +80,22 @@ if page == "Command centre":
 
 elif page == "Discover & import":
     query = st.text_input("UK care provider search", 'care provider "requires improvement"')
-    search_limit = st.slider("Google results to inspect", 10, 50, 40, step=10)
     st.link_button("Open this search in Google", "https://www.google.com/search?q=" + quote_plus(query))
-    google_ready = bool(key("GOOGLE_SEARCH_API_KEY") and key("GOOGLE_SEARCH_ENGINE_ID"))
-    if st.button("Import Google results automatically", disabled=not google_ready):
+    st.info("Google has not enabled Custom Search JSON API access for this project. Review results in Google, then paste selected companies below.")
+    quick_list = st.text_area("Paste Google results — one per line",
+                              placeholder="Example Care Ltd | https://www.examplecare.co.uk\nSecond Provider | https://www.secondprovider.co.uk",
+                              height=160)
+    if st.button("Add pasted prospects"):
         try:
-            with st.spinner("Searching public business sources…"):
-                found = discover(query, key("GOOGLE_SEARCH_API_KEY"), key("GOOGLE_SEARCH_ENGINE_ID"), search_limit)
-                existing = {p.website for p in prospects}
-                for p in found:
-                    if p.website not in existing:
-                        store.save(p, "discovered")
-                        existing.add(p.website)
-            st.success(f"Found {len(found)} candidates. Review them in Research & enrich.")
-            if not found:
-                st.warning("Google returned no matching listings. Try a broader query such as `care provider`.")
+            found = import_quick_list(quick_list)
+            existing = {p.website for p in prospects}
+            added = 0
+            for p in found:
+                if p.website not in existing:
+                    store.save(p, "human-reviewed Google result imported")
+                    existing.add(p.website)
+                    added += 1
+            st.success(f"Added {added} new prospects. Open Research & enrich next.")
         except PipelineError as exc:
             st.error(str(exc))
     st.subheader("Import a shortlist")

@@ -25,13 +25,11 @@ GOOGLE_SEARCH_API_KEY = "your-key"
 GOOGLE_SEARCH_ENGINE_ID = "your-programmable-search-engine-id"
 ```
 
-Automatic discovery uses the official Google Programmable Search JSON API at `www.googleapis.com`; it does not scrape Google result pages. Create a Programmable Search Engine configured to search the web, then set its engine ID and API key securely. Google may impose quotas or charges. Without these settings, the dashboard opens the query in ordinary Google and accepts CSV results manually. Public provider websites must also be reachable. Never commit keys or contact exports.
-
-If environment publication is unavailable, paste the API key into the masked **Google API key** field in the Streamlit sidebar. That value remains in the current Streamlit browser session and is not saved to SQLite or Git. The application defaults to search engine ID `86e430f9380d94ea2`; environment configuration can override it.
+Discovery opens an ordinary Google search for human review. Paste selected results into the app as `Company Name | https://official-website` lines, or upload the research CSV template. This avoids scraping Google and does not require or store a Google API key. Public provider websites must be reachable. Never commit contact exports.
 
 ## Workflow
 
-1. Search Google manually or use its official Programmable Search API to inspect up to 50 results per run. You can also import a UTF-8 CSV using the downloadable research template. Search results are unqualified candidates and may include directories; confirm the company website manually.
+1. Search Google and paste up to 100 reviewed `Company | URL` results into the app, or import a UTF-8 CSV using the downloadable research template. Search results are unqualified candidates; confirm the company website manually.
 2. Scan public team pages (at most five per company). The crawler honours robots.txt, spaces requests, limits response sizes and rejects private network destinations. If robots permissions cannot be established, use manual research. Extraction supports simple team cards; JavaScript-only websites need manual research. A discovered name is a candidate, not an asserted identity.
 3. Confirm the company, relevant UK regulator listing (CQC, CIW, Care Inspectorate Scotland or RQIA), 50–250 employee count with dated evidence, Operations Director or Registered Manager name, role and contact source. These facts require human evidence review; the app does not automatically verify company size or registration. Never invent missing facts.
 4. Use Google to locate an email published on the official company website. Confirm the exact company domain and save the source page. The app labels this `source_confirmed`: it establishes provenance, not deliverability. Do not guess addresses.

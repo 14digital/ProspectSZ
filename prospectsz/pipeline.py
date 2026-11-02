@@ -213,6 +213,28 @@ def import_csv(text: str) -> list[Prospect]:
     return prospects
 
 
+def import_quick_list(text: str) -> list[Prospect]:
+    """Import lines copied from human-reviewed Google results: Company | URL."""
+    prospects = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        if not raw.strip():
+            continue
+        parts = re.split(r"\s*(?:\||\t)\s*", raw.strip(), maxsplit=1)
+        if len(parts) != 2 or not all(parts):
+            raise PipelineError(f"Line {number} must be `Company Name | https://website`.")
+        name, website = parts[0].strip(), parts[1].strip().rstrip("/")
+        parsed = urlparse(website)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise PipelineError(f"Line {number} needs a full HTTPS website URL.")
+        prospects.append(Prospect(name, website, discovery_source="Human-reviewed Google result",
+                                  notes=["Google result imported by a person; confirm provider and regulator evidence."]))
+        if len(prospects) > 100:
+            raise PipelineError("Paste at most 100 companies at a time.")
+    if not prospects:
+        raise PipelineError("Paste at least one company and website.")
+    return prospects
+
+
 def extract_contacts(soup: BeautifulSoup, source: str) -> list[tuple[str, str, str]]:
     """Conservative candidates from small team cards; human confirms identity."""
     contacts = []

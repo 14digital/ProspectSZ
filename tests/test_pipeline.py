@@ -7,7 +7,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 
 from prospectsz.pipeline import (PipelineError, Prospect, draft, export_csv, extract_contacts,
-                                 handoff, import_csv, is_directory_url, public_url, rank, research_csv, run_batch,
+                                 handoff, import_csv, import_quick_list, is_directory_url, public_url, rank, research_csv, run_batch,
                                  discover)
 from prospectsz.store import Store
 
@@ -58,6 +58,12 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(import_csv("company_name,website\nExample,https://example.com\n")[0].company_name, "Example")
         with self.assertRaises(PipelineError):
             import_csv("name,url\nX,Y")
+
+    def test_quick_google_result_import(self):
+        rows = import_quick_list("Example Care | https://example.com\nSecond\thttps://second.example")
+        self.assertEqual([p.company_name for p in rows], ["Example Care", "Second"])
+        with self.assertRaises(PipelineError):
+            import_quick_list("Missing URL")
 
     @patch("prospectsz.pipeline.socket.getaddrinfo")
     def test_private_addresses_rejected(self, dns):
