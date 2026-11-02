@@ -6,6 +6,8 @@ A local Streamlit command centre for researching UK regulated care providers wit
 
 Python 3.12 is the tested runtime.
 
+Streamlit Community Cloud should use Python 3.12. The repository includes both `runtime.txt` and `.python-version`; when creating the app, choose Python 3.12 under Advanced settings if the deployment form offers a runtime selector.
+
 ```bash
 python -m venv .venv
 .venv/bin/python -m pip install -r requirements.lock
