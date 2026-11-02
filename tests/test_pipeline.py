@@ -1,0 +1,132 @@
+import csv
+import io
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from bs4 import BeautifulSoup
+
+from prospectsz.pipeline import (PipelineError, Prospect, draft, export_csv, extract_contacts,
+                                 handoff, import_csv, public_url, rank, research_csv, run_batch,
+                                 verify_contact)
+from prospectsz.store import Store
+
+
+def ready():
+    return Prospect("Example Care", "https://example.com", employee_count=100,
+                    employee_source="https://example.com/about (2026-11-02)",
+                    regulator_url="https://www.cqc.org.uk/provider/example",
+                    target_name="Alex Smith", target_role="Registered Manager",
+                    contact_source="https://example.com/team", verified_email="alex@example.com",
+                    verification_status="verified")
+
+
+class PipelineTests(unittest.TestCase):
+    def test_draft_sequence_and_length(self):
+        p = ready()
+        message = draft(p)
+        self.assertLess(len(message.split()), 150)
+        fragments = ["interrupting", "paperwork", "At 14Digital", "Are you opposed"]
+        self.assertEqual(sorted(message.index(s) for s in fragments), [message.index(s) for s in fragments])
+        self.assertEqual(p.review_status, "pending_approval")
+        self.assertEqual(handoff([p]), {"pipeline": []})
+        p.review_status = "approved"
+        self.assertEqual(handoff([p])["pipeline"][0]["Target Name"], "Alex Smith")
+
+    def test_eligibility_gates(self):
+        for field, value in [("employee_count", 20), ("employee_count", 251),
+                             ("employee_source", ""), ("regulator_url", ""),
+                             ("contact_source", ""), ("target_role", "CEO"),
+                             ("verification_status", "accept_all")]:
+            with self.subTest(field=field, value=value):
+                p = ready()
+                setattr(p, field, value)
+                with self.assertRaises(PipelineError):
+                    draft(p)
+
+    @patch("prospectsz.pipeline.api_get")
+    def test_verification_rejects_catchall_and_clears_old_approval(self, api):
+        p = ready()
+        p.review_status = "approved"
+        api.side_effect = [{"data": {"email": "alex@example.com"}},
+                           {"data": {"status": "valid", "result": "deliverable", "accept_all": True,
+                                     "disposable": False, "webmail": False}}]
+        with self.assertRaises(PipelineError):
+            verify_contact(p, "fake-test-key")
+        self.assertFalse(p.verified_email)
+        self.assertEqual(p.review_status, "research")
+
+    @patch("prospectsz.pipeline.api_get")
+    def test_verified_corporate_email(self, api):
+        api.side_effect = [{"data": {"email": "alex@example.com"}},
+                           {"data": {"status": "valid", "result": "deliverable", "accept_all": False,
+                                     "disposable": False, "webmail": False}}]
+        p = ready()
+        verify_contact(p, "fake-test-key")
+        self.assertEqual(p.verification_status, "verified")
+        self.assertTrue(p.verified_at)
+
+    def test_contact_extraction(self):
+        soup = BeautifulSoup('<article><h3>Alex Smith</h3><p>Registered Manager</p></article>', "html.parser")
+        self.assertEqual(extract_contacts(soup, "source"), [("Alex Smith", "Registered Manager", "source")])
+
+    def test_csv_and_formula_safety(self):
+        p = ready()
+        draft(p)
+        p.company_name = "=DANGEROUS()"
+        p.review_status = "approved"
+        row = next(csv.DictReader(io.StringIO(export_csv([p]))))
+        self.assertTrue(row["Company Name"].startswith("'="))
+        self.assertEqual(import_csv("company_name,website\nExample,https://example.com\n")[0].company_name, "Example")
+        with self.assertRaises(PipelineError):
+            import_csv("name,url\nX,Y")
+
+    @patch("prospectsz.pipeline.socket.getaddrinfo")
+    def test_private_addresses_rejected(self, dns):
+        dns.return_value = [(2, 1, 6, "", ("127.0.0.1", 443))]
+        with self.assertRaises(PipelineError):
+            public_url("https://internal.example")
+
+    def test_persistence_and_deletion(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(folder + "/test.sqlite3")
+            p = ready()
+            store.save(p, "test")
+            self.assertEqual(store.all()[0].target_name, p.target_name)
+            self.assertEqual(store.audit()[0]["action"], "test")
+            store.delete(p.website)
+            self.assertEqual(store.all(), [])
+            self.assertEqual(store.audit(), [])
+
+    def test_ranking_uses_business_evidence_and_suppression(self):
+        p = ready()
+        p.cqc_rating = "Inadequate"
+        p.review_signal = "Awaiting review"
+        p.cqc_source = "https://www.cqc.org.uk/location/example (checked 2026-11-02)"
+        score, reasons = rank(p)
+        self.assertEqual(score, 100)
+        self.assertTrue(any("CQC" in reason for reason in reasons))
+        p.target_name = "A Person"
+        self.assertEqual(rank(p)[0], 100)  # Names and perceived identity do not affect priority.
+        p.do_not_contact = True
+        self.assertEqual(rank(p), (0, ["Suppressed: do not contact"]))
+
+    def test_research_exchange_and_batch_are_bounded(self):
+        p = ready()
+        p.review_status = "research"
+        p.cqc_rating, p.cqc_source = "Requires improvement", "https://www.cqc.org.uk/example"
+        exported = research_csv([p])
+        self.assertIn("priority_score", exported)
+        saved = []
+        with patch("prospectsz.pipeline.verify_contact") as verify, patch("prospectsz.pipeline.draft") as create:
+            processed = run_batch([p], "test-key", 1, lambda prospect, action: saved.append(action))
+        self.assertEqual(processed, [p])
+        verify.assert_called_once_with(p, "test-key")
+        create.assert_called_once_with(p)
+        self.assertEqual(saved, ["on_demand_batch; no automatic approval or sending"])
+        with self.assertRaises(PipelineError):
+            run_batch([p], "", 51, lambda *_: None)
+
+
+if __name__ == "__main__":
+    unittest.main()
