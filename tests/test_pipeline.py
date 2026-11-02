@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 from prospectsz.pipeline import (PipelineError, Prospect, draft, export_csv, extract_contacts,
                                  handoff, import_csv, public_url, rank, research_csv, run_batch,
-                                 verify_contact)
+                                 discover)
 from prospectsz.store import Store
 
 
@@ -18,7 +18,7 @@ def ready():
                     regulator_url="https://www.cqc.org.uk/provider/example",
                     target_name="Alex Smith", target_role="Registered Manager",
                     contact_source="https://example.com/team", verified_email="alex@example.com",
-                    verification_status="verified")
+                    verification_status="source_confirmed", email_source="https://example.com/team")
 
 
 class PipelineTests(unittest.TestCase):
@@ -43,28 +43,6 @@ class PipelineTests(unittest.TestCase):
                 setattr(p, field, value)
                 with self.assertRaises(PipelineError):
                     draft(p)
-
-    @patch("prospectsz.pipeline.api_get")
-    def test_verification_rejects_catchall_and_clears_old_approval(self, api):
-        p = ready()
-        p.review_status = "approved"
-        api.side_effect = [{"data": {"email": "alex@example.com"}},
-                           {"data": {"status": "valid", "result": "deliverable", "accept_all": True,
-                                     "disposable": False, "webmail": False}}]
-        with self.assertRaises(PipelineError):
-            verify_contact(p, "fake-test-key")
-        self.assertFalse(p.verified_email)
-        self.assertEqual(p.review_status, "research")
-
-    @patch("prospectsz.pipeline.api_get")
-    def test_verified_corporate_email(self, api):
-        api.side_effect = [{"data": {"email": "alex@example.com"}},
-                           {"data": {"status": "valid", "result": "deliverable", "accept_all": False,
-                                     "disposable": False, "webmail": False}}]
-        p = ready()
-        verify_contact(p, "fake-test-key")
-        self.assertEqual(p.verification_status, "verified")
-        self.assertTrue(p.verified_at)
 
     def test_contact_extraction(self):
         soup = BeautifulSoup('<article><h3>Alex Smith</h3><p>Registered Manager</p></article>', "html.parser")
@@ -104,10 +82,10 @@ class PipelineTests(unittest.TestCase):
         p.review_signal = "Awaiting review"
         p.cqc_source = "https://www.cqc.org.uk/location/example (checked 2026-11-02)"
         score, reasons = rank(p)
-        self.assertEqual(score, 100)
+        self.assertEqual(score, 93)
         self.assertTrue(any("CQC" in reason for reason in reasons))
         p.target_name = "A Person"
-        self.assertEqual(rank(p)[0], 100)  # Names and perceived identity do not affect priority.
+        self.assertEqual(rank(p)[0], 93)  # Names and perceived identity do not affect priority.
         p.do_not_contact = True
         self.assertEqual(rank(p), (0, ["Suppressed: do not contact"]))
 
@@ -118,14 +96,21 @@ class PipelineTests(unittest.TestCase):
         exported = research_csv([p])
         self.assertIn("priority_score", exported)
         saved = []
-        with patch("prospectsz.pipeline.verify_contact") as verify, patch("prospectsz.pipeline.draft") as create:
-            processed = run_batch([p], "test-key", 1, lambda prospect, action: saved.append(action))
+        with patch("prospectsz.pipeline.draft") as create:
+            processed = run_batch([p], 1, lambda prospect, action: saved.append(action))
         self.assertEqual(processed, [p])
-        verify.assert_called_once_with(p, "test-key")
         create.assert_called_once_with(p)
         self.assertEqual(saved, ["on_demand_batch; no automatic approval or sending"])
         with self.assertRaises(PipelineError):
-            run_batch([p], "", 51, lambda *_: None)
+            run_batch([p], 51, lambda *_: None)
+
+    @patch("prospectsz.pipeline.api_get")
+    def test_google_discovery(self, api):
+        api.return_value = {"items": [{"title": "Example Home Care", "snippet": "Domiciliary care",
+                                        "link": "https://example.com/about"}]}
+        found = discover("care", "key", "engine", 10)
+        self.assertEqual(found[0].website, "https://example.com")
+        self.assertIn("Google candidate", found[0].notes[0])
 
 
 if __name__ == "__main__":

@@ -10,7 +10,6 @@ import re
 import socket
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
@@ -40,6 +39,7 @@ class Prospect:
     verified_email: str = ""
     verification_status: str = "not_checked"
     verified_at: str = ""
+    email_source: str = ""
     drafted_message: str = ""
     review_status: str = "research"
     notes: list[str] = field(default_factory=list)
@@ -131,24 +131,32 @@ def api_get(url: str, *, params=None, headers=None):
         raise PipelineError("Provider request failed. Check the API key, quota, and allowed hostname.") from None
 
 
-def discover(query: str, key: str, limit: int = 10) -> list[Prospect]:
-    if not key:
-        raise PipelineError("Configure BRAVE_SEARCH_API_KEY or import a company CSV.")
-    result = api_get("https://api.search.brave.com/res/v1/web/search",
-                     params={"q": query, "country": "GB", "count": min(limit, 20)},
-                     headers={"X-Subscription-Token": key, "Accept": "application/json"})
+def discover(query: str, key: str, engine_id: str, limit: int = 10) -> list[Prospect]:
+    if not key or not engine_id:
+        raise PipelineError("Configure GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID, or import a company CSV.")
     prospects, seen = [], set()
-    for item in result.get("web", {}).get("results", []):
-        url = item.get("url", "")
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.hostname in seen:
-            continue
-        if not CARE.search(item.get("title", "") + " " + item.get("description", "")):
-            continue
-        seen.add(parsed.hostname)
-        prospects.append(Prospect(item.get("title", parsed.hostname), f"https://{parsed.netloc}",
-                                  discovery_source=url,
-                                  notes=["Search candidate: confirm provider identity, UK registration and 50–250 employees."]))
+    limit = min(max(limit, 1), 50)
+    for start in range(1, limit + 1, 10):
+        result = api_get("https://www.googleapis.com/customsearch/v1",
+                         params={"q": query, "key": key, "cx": engine_id,
+                                 "gl": "uk", "cr": "countryUK", "num": min(10, limit - len(prospects)),
+                                 "start": start})
+        items = result.get("items", [])
+        if not items:
+            break
+        for item in items:
+            url = item.get("link", "")
+            parsed = urlparse(url)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.hostname in seen:
+                continue
+            if not CARE.search(item.get("title", "") + " " + item.get("snippet", "")):
+                continue
+            seen.add(parsed.hostname)
+            prospects.append(Prospect(item.get("title", parsed.hostname), f"https://{parsed.netloc}",
+                                      discovery_source=url,
+                                      notes=["Google candidate: confirm provider identity, UK registration and 50–250 employees."]))
+            if len(prospects) >= limit:
+                break
     return prospects
 
 
@@ -172,6 +180,7 @@ def import_csv(text: str) -> list[Prospect]:
         if urlparse(website).scheme not in {"http", "https"} or not urlparse(website).hostname:
             raise PipelineError("Every website must be a full HTTP(S) URL.")
         value = lambda name, default="": (row.get(name) or default).strip()
+        imported_email, imported_email_source = value("verified_email"), value("email_source")
         prospects.append(Prospect(row["company_name"].strip(), website,
                                   employee_count=count, employee_source=value("employee_source"),
                                   regulator_url=value("regulator_url"),
@@ -180,7 +189,9 @@ def import_csv(text: str) -> list[Prospect]:
                                   cqc_source=value("cqc_source"),
                                   phone=value("phone"), phone_source=value("phone_source"),
                                   target_name=value("target_name"), target_role=value("target_role"),
-                                  contact_source=value("contact_source"), linkedin_url=value("linkedin_url")))
+                                  contact_source=value("contact_source"), linkedin_url=value("linkedin_url"),
+                                  verified_email=imported_email, email_source=imported_email_source,
+                                  verification_status=("source_confirmed" if imported_email and imported_email_source else "not_checked")))
     return prospects
 
 
@@ -223,44 +234,13 @@ def research(prospect: Prospect, reader: WebReader) -> list[tuple[str, str, str]
     return list(dict.fromkeys(contacts))
 
 
-def verify_contact(prospect: Prospect, key: str):
-    # Clear previous results before making a fresh attempt.
-    prospect.verified_email = prospect.verified_at = prospect.drafted_message = ""
-    prospect.verification_status = "not_verified"
-    prospect.review_status = "research"
-    if not key:
-        raise PipelineError("Configure HUNTER_API_KEY to find and verify corporate emails.")
-    names = prospect.target_name.split()
-    if len(names) < 2:
-        raise PipelineError("Confirm the contact's full name first.")
-    domain = urlparse(prospect.website).hostname
-    if not domain:
-        raise PipelineError("Company website is invalid.")
-    domain = domain.removeprefix("www.")
-    found = api_get("https://api.hunter.io/v2/email-finder", params={
-        "domain": domain, "first_name": names[0], "last_name": " ".join(names[1:]), "api_key": key,
-    }).get("data", {})
-    email = found.get("email") or ""
-    if "@" not in email or email.rsplit("@", 1)[1].lower() != domain.lower():
-        raise PipelineError("No matching corporate-domain email found; no address was guessed.")
-    verified = api_get("https://api.hunter.io/v2/email-verifier",
-                       params={"email": email, "api_key": key}).get("data", {})
-    if (verified.get("status") != "valid" or verified.get("result") != "deliverable"
-            or verified.get("accept_all") is not False or verified.get("disposable") is not False
-            or verified.get("webmail") is not False):
-        prospect.verification_status = verified.get("status", "unknown")
-        raise PipelineError("Email is not confirmed deliverable corporate mail; excluded from drafting.")
-    prospect.verified_email = email
-    prospect.verification_status = "verified"
-    prospect.verified_at = datetime.now(timezone.utc).isoformat()
-
-
 def eligible(prospect: Prospect) -> bool:
     return bool(not prospect.do_not_contact and prospect.employee_count is not None and 50 <= prospect.employee_count <= 250
                 and prospect.employee_source.strip() and prospect.regulator_url.strip()
                 and prospect.contact_source.strip() and prospect.target_name.strip()
                 and ROLE.fullmatch(prospect.target_role.strip())
-                and prospect.verification_status == "verified" and prospect.verified_email)
+                and prospect.verification_status in {"verified", "source_confirmed"}
+                and prospect.verified_email and prospect.email_source.strip())
 
 
 def draft(prospect: Prospect) -> str:
@@ -339,13 +319,16 @@ def rank(prospect: Prospect) -> tuple[int, list[str]]:
     if prospect.verification_status == "verified" and prospect.verified_email:
         score += 15
         reasons.append("Verified corporate email: +15")
+    elif prospect.verification_status == "source_confirmed" and prospect.verified_email and prospect.email_source.strip():
+        score += 8
+        reasons.append("Official-site email, deliverability unverified: +8")
     if prospect.regulator_url.strip():
         score += 10
         reasons.append("Regulator evidence supplied: +10")
     return score, reasons or ["More evidence needed"]
 
 
-def run_batch(prospects: list[Prospect], hunter_key: str, limit: int, save, progress=None):
+def run_batch(prospects: list[Prospect], limit: int, save, progress=None):
     """On-demand bounded research → enrichment → drafting; never approve or send."""
     if not 1 <= limit <= 50:
         raise PipelineError("Batch size must be between 1 and 50.")
@@ -365,13 +348,12 @@ def run_batch(prospects: list[Prospect], hunter_key: str, limit: int, save, prog
                               and p.employee_source.strip() and p.regulator_url.strip()
                               and p.contact_source.strip() and p.target_name.strip()
                               and ROLE.fullmatch(p.target_role.strip()))
-            if research_ready and hunter_key:
-                verify_contact(p, hunter_key)
+            if research_ready and p.verification_status in {"verified", "source_confirmed"}:
                 draft(p)
             elif not research_ready:
                 p.notes.append("Batch paused: size, regulator or decision-maker evidence missing.")
             else:
-                p.notes.append("Batch paused: Hunter connection required for email verification.")
+                p.notes.append("Batch paused: confirm a target email and its official source.")
         except PipelineError as exc:
             p.notes.append(str(exc))
         p.notes = list(dict.fromkeys(p.notes))[-20:]
@@ -382,7 +364,7 @@ def run_batch(prospects: list[Prospect], hunter_key: str, limit: int, save, prog
 
 RESEARCH_FIELDS = ["company_name", "website", "employee_count", "employee_source", "regulator_url",
                    "cqc_rating", "review_signal", "cqc_source", "target_name", "target_role",
-                   "contact_source", "phone", "phone_source", "linkedin_url"]
+                   "contact_source", "phone", "phone_source", "linkedin_url", "verified_email", "email_source"]
 
 
 def research_csv(prospects: list[Prospect]) -> str:

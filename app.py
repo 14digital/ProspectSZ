@@ -1,11 +1,12 @@
 """Run with: streamlit run app.py"""
 import json
 import os
+from urllib.parse import quote_plus
 
 import streamlit as st
 
 from prospectsz.pipeline import (PipelineError, WebReader, discover, draft, eligible,
-                                 export_csv, handoff, import_csv, research, verify_contact,
+                                 export_csv, handoff, import_csv, research,
                                  rank, research_csv, run_batch, RESEARCH_FIELDS)
 from prospectsz.store import Store
 
@@ -30,8 +31,8 @@ with st.sidebar:
     page = st.radio("Workspace", ["Command centre", "Discover & import", "Research & enrich", "Approval queue", "Export & audit"])
     st.divider()
     st.caption("UK regulated care · 50–250 employees")
-    st.write("Brave Search: " + ("configured" if key("BRAVE_SEARCH_API_KEY") else "not configured"))
-    st.write("Hunter: " + ("configured" if key("HUNTER_API_KEY") else "not configured"))
+    google_ready = bool(key("GOOGLE_SEARCH_API_KEY") and key("GOOGLE_SEARCH_ENGINE_ID"))
+    st.write("Google Search: " + ("configured" if google_ready else "manual mode"))
     st.caption("API keys belong in environment variables or .streamlit/secrets.toml. Never commit them.")
 
 st.title(page)
@@ -66,7 +67,7 @@ if page == "Command centre":
         def update(index, total, company):
             meter.progress(index / max(total, 1))
             label.write(f"Researching {index + 1}/{total}: {company}")
-        processed = run_batch(prospects, key("HUNTER_API_KEY"), limit, store.save, update)
+        processed = run_batch(prospects, limit, store.save, update)
         meter.progress(1.0)
         st.success(f"Processed {len(processed)} companies; {sum(p.review_status == 'pending_approval' for p in processed)} drafts queued. "
                    "Check research notes for incomplete records.")
@@ -78,10 +79,13 @@ if page == "Command centre":
 
 elif page == "Discover & import":
     query = st.text_input("UK care provider search", 'UK domiciliary care provider "our team" "registered manager"')
-    if st.button("Discover companies", disabled=not bool(key("BRAVE_SEARCH_API_KEY"))):
+    search_limit = st.slider("Google results to inspect", 10, 50, 40, step=10)
+    st.link_button("Open this search in Google", "https://www.google.com/search?q=" + quote_plus(query))
+    google_ready = bool(key("GOOGLE_SEARCH_API_KEY") and key("GOOGLE_SEARCH_ENGINE_ID"))
+    if st.button("Import Google results automatically", disabled=not google_ready):
         try:
             with st.spinner("Searching public business sources…"):
-                found = discover(query, key("BRAVE_SEARCH_API_KEY"))
+                found = discover(query, key("GOOGLE_SEARCH_API_KEY"), key("GOOGLE_SEARCH_ENGINE_ID"), search_limit)
                 existing = {p.website for p in prospects}
                 for p in found:
                     if p.website not in existing:
@@ -113,8 +117,9 @@ elif page == "Discover & import":
                         value = getattr(p, field)
                         if value not in (None, "", "Unknown"):
                             setattr(previous, field, value)
-                    previous.verified_email = previous.verified_at = previous.drafted_message = ""
-                    previous.verification_status, previous.review_status = "not_checked", "research"
+                    previous.verified_at = previous.drafted_message = ""
+                    previous.verification_status = ("source_confirmed" if previous.verified_email and previous.email_source else "not_checked")
+                    previous.review_status = "research"
                     store.save(previous, "CSV research updated; verification and approval cleared")
                     updated += 1
             st.success(f"Imported {added} new companies; updated {updated} matching records.")
@@ -175,19 +180,27 @@ elif page == "Research & enrich":
                     p.cqc_rating, p.review_signal, p.cqc_source = rating, signal, cqc_source.strip()
                     p.phone, p.phone_source, p.linkedin_url = phone.strip(), phone_source.strip(), linkedin_url.strip()
                     p.do_not_contact = suppressed
-                    p.verified_email = p.verified_at = p.drafted_message = ""
+                    p.verified_email = p.verified_at = p.email_source = p.drafted_message = ""
                     p.verification_status, p.review_status = "not_checked", "research"
                     store.save(p, "research_confirmed; previous verification and approval cleared")
                     st.success("Research saved. Verify the email next.")
-        if st.button("Find and verify corporate email", disabled=not bool(key("HUNTER_API_KEY"))):
-            try:
-                with st.spinner("Finding and independently verifying the address with Hunter…"):
-                    verify_contact(p, key("HUNTER_API_KEY"))
-                st.success("Corporate email verified as deliverable.")
-            except PipelineError as exc:
-                st.error(str(exc))
-            finally:
-                store.save(p, "email_verification_attempt")
+        st.subheader("Email evidence")
+        st.caption("Use Google to locate the official team/contact page. A company-published address can be source-confirmed, "
+                   "but Google does not verify deliverability.")
+        email = st.text_input("Target's corporate email", p.verified_email)
+        email_source = st.text_input("Official webpage showing that email", p.email_source)
+        email_checked = st.checkbox("I confirmed this address belongs to the target and appears on the official company website.")
+        if st.button("Save source-confirmed email"):
+            domain = p.website.split("//", 1)[-1].split("/", 1)[0].removeprefix("www.").lower()
+            email_domain = email.rsplit("@", 1)[-1].lower() if "@" in email else ""
+            if not email_checked or not email_source.startswith("https://") or email_domain != domain:
+                st.error("Confirm an HTTPS official source and an email on the exact company website domain.")
+            else:
+                p.verified_email, p.email_source = email.strip(), email_source.strip()
+                p.verification_status, p.verified_at = "source_confirmed", ""
+                p.drafted_message, p.review_status = "", "research"
+                store.save(p, "official-site email source confirmed; deliverability not verified")
+                st.success("Email saved as publicly sourced. Deliverability remains unverified.")
         st.write("Email status: " + p.verification_status)
         st.write(f"Priority: {rank(p)[0]}/100 — " + "; ".join(rank(p)[1]))
         if st.button("Suppress company from outreach", key="suppress:" + p.website):
@@ -215,7 +228,7 @@ elif page == "Approval queue":
     for p in queue:
         with st.expander(f"{p.company_name} · {p.review_status}", expanded=True):
             st.write(f"{p.target_name} · {p.target_role} · {p.verified_email}")
-            st.caption(f"Hunter verified at {p.verified_at}. Contact source: {p.contact_source}")
+            st.caption(f"Email status: {p.verification_status}. Email source: {p.email_source}. Contact source: {p.contact_source}")
             message = st.text_area("Draft", p.drafted_message, key="message:" + p.website, height=300)
             st.caption(f"{len(message.split())} words · required sequence: accusation audit, empathy, solution, no-oriented close.")
             reviewed = st.checkbox("I have reviewed the evidence, wording and suitability for outreach.", key="review:" + p.website)
@@ -246,6 +259,6 @@ elif page == "Export & audit":
     st.subheader("Clay / Prospect research exchange")
     st.download_button("Download ranked research CSV", research_csv(prospects), "14digital-research.csv", "text/csv")
     st.caption("Research export includes unverified candidates and suppression flags. It is for enrichment, not an approved sending list. "
-               "Bring enriched fields back through Discover & import; external emails still require Hunter verification.")
+               "Bring enriched fields back through Discover & import; emails require an official company-page source.")
     st.subheader("Local activity log")
     st.dataframe(store.audit(), hide_index=True)
