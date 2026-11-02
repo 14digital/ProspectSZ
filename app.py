@@ -7,7 +7,7 @@ import streamlit as st
 
 from prospectsz.pipeline import (PipelineError, WebReader, discover, draft, eligible,
                                  export_csv, handoff, import_csv, research,
-                                 rank, research_csv, run_batch, RESEARCH_FIELDS)
+                                 is_directory_url, rank, research_csv, run_batch, RESEARCH_FIELDS)
 from prospectsz.store import Store
 
 st.set_page_config(page_title="ProspectSZ · 14Digital", page_icon="◈", layout="wide")
@@ -89,7 +89,7 @@ if page == "Command centre":
             "We build small care administration modules around existing systems. Who looks after your operations or recruitment processes?", language=None)
 
 elif page == "Discover & import":
-    query = st.text_input("UK care provider search", 'UK domiciliary care provider "our team" "registered manager"')
+    query = st.text_input("UK care provider search", 'care provider "requires improvement"')
     search_limit = st.slider("Google results to inspect", 10, 50, 40, step=10)
     st.link_button("Open this search in Google", "https://www.google.com/search?q=" + quote_plus(query))
     google_ready = bool(key("GOOGLE_SEARCH_API_KEY") and key("GOOGLE_SEARCH_ENGINE_ID"))
@@ -103,6 +103,8 @@ elif page == "Discover & import":
                         store.save(p, "discovered")
                         existing.add(p.website)
             st.success(f"Found {len(found)} candidates. Review them in Research & enrich.")
+            if not found:
+                st.warning("Google returned no matching listings. Try a broader query such as `care provider`.")
         except PipelineError as exc:
             st.error(str(exc))
     st.subheader("Import a shortlist")
@@ -148,7 +150,22 @@ elif page == "Research & enrich":
         st.warning("Confirm this is a UK regulated care provider with 50–250 employees. "
                    "Use the relevant regulator (CQC, CIW, Care Inspectorate Scotland or RQIA) and a dated headcount source. "
                    "The app does not infer registration or employee count from search snippets.")
-        if st.button("Scan public team pages"):
+        if is_directory_url(p.website):
+            st.info("This is a directory listing. Find the provider's official website in Google, save it below, then scan its team pages.")
+            official_site = st.text_input("Official company website", placeholder="https://provider.example")
+            if st.button("Save official website"):
+                from urllib.parse import urlparse
+                parsed = urlparse(official_site.strip())
+                if parsed.scheme != "https" or not parsed.hostname or is_directory_url(official_site.strip()):
+                    st.error("Enter the provider's full official HTTPS website URL.")
+                else:
+                    old_website = p.website
+                    p.website = official_site.strip().rstrip("/")
+                    p.notes.append(f"Official website manually confirmed from listing: {p.discovery_source}")
+                    store.delete(old_website)
+                    store.save(p, "official website confirmed; directory candidate re-keyed")
+                    st.rerun()
+        if st.button("Scan public team pages", disabled=is_directory_url(p.website)):
             try:
                 with st.spinner("Reading up to five pages, respecting robots.txt and crawl delays…"):
                     candidates = research(p, WebReader())

@@ -19,6 +19,8 @@ from bs4 import BeautifulSoup
 AGENT = "ProspectSZ/1.0 (+https://14digital.co.uk; public business research)"
 CARE = re.compile(r"\b(care|supported living|homecare|domiciliary|nursing)\b", re.I)
 ROLE = re.compile(r"\b(?:operations director|director of operations|registered manager|managing director|owner|founder)\b", re.I)
+DIRECTORY_HOSTS = {"www.cqc.org.uk", "cqc.org.uk", "www.carehome.co.uk", "carehome.co.uk",
+                   "www.homecare.co.uk", "homecare.co.uk"}
 
 
 class PipelineError(Exception):
@@ -126,9 +128,21 @@ def api_get(url: str, *, params=None, headers=None):
         response = requests.get(url, params=params, headers=headers, timeout=25)
         response.raise_for_status()
         return response.json()
+    except requests.HTTPError as exc:
+        try:
+            message = exc.response.json().get("error", {}).get("message", "")
+        except (AttributeError, ValueError):
+            message = ""
+        message = re.sub(r"AIza[\w-]+", "[redacted key]", message)[:240]
+        detail = f": {message}" if message else ""
+        raise PipelineError(f"Google Search request failed{detail}") from None
     except (requests.RequestException, ValueError):
         # Never expose provider request URLs: they can contain API keys.
         raise PipelineError("Provider request failed. Check the API key, quota, and allowed hostname.") from None
+
+
+def is_directory_url(url: str) -> bool:
+    return (urlparse(url).hostname or "").lower() in DIRECTORY_HOSTS
 
 
 def discover(query: str, key: str, engine_id: str, limit: int = 10) -> list[Prospect]:
@@ -147,14 +161,18 @@ def discover(query: str, key: str, engine_id: str, limit: int = 10) -> list[Pros
         for item in items:
             url = item.get("link", "")
             parsed = urlparse(url)
-            if parsed.scheme != "https" or not parsed.hostname or parsed.hostname in seen:
+            canonical = url.split("#", 1)[0].rstrip("/")
+            if parsed.scheme != "https" or not parsed.hostname or canonical in seen:
                 continue
             if not CARE.search(item.get("title", "") + " " + item.get("snippet", "")):
                 continue
-            seen.add(parsed.hostname)
-            prospects.append(Prospect(item.get("title", parsed.hostname), f"https://{parsed.netloc}",
-                                      discovery_source=url,
-                                      notes=["Google candidate: confirm provider identity, UK registration and 50–250 employees."]))
+            seen.add(canonical)
+            cqc = parsed.hostname.lower() in {"cqc.org.uk", "www.cqc.org.uk"}
+            prospects.append(Prospect(item.get("title", parsed.hostname), canonical,
+                                      discovery_source=canonical,
+                                      regulator_url=(canonical if cqc else ""),
+                                      cqc_source=(canonical if cqc else ""),
+                                      notes=["Directory candidate: confirm the provider's official website, identity, UK registration and 50–250 employees."]))
             if len(prospects) >= limit:
                 break
     return prospects

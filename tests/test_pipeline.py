@@ -7,7 +7,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 
 from prospectsz.pipeline import (PipelineError, Prospect, draft, export_csv, extract_contacts,
-                                 handoff, import_csv, public_url, rank, research_csv, run_batch,
+                                 handoff, import_csv, is_directory_url, public_url, rank, research_csv, run_batch,
                                  discover)
 from prospectsz.store import Store
 
@@ -106,11 +106,16 @@ class PipelineTests(unittest.TestCase):
 
     @patch("prospectsz.pipeline.api_get")
     def test_google_discovery(self, api):
-        api.return_value = {"items": [{"title": "Example Home Care", "snippet": "Domiciliary care",
-                                        "link": "https://example.com/about"}]}
+        api.return_value = {"items": [
+            {"title": "Example Home Care", "snippet": "Domiciliary care", "link": "https://www.cqc.org.uk/location/1"},
+            {"title": "Second Care", "snippet": "Care provider", "link": "https://www.cqc.org.uk/location/2"},
+        ]}
         found = discover("care", "key", "engine", 10)
-        self.assertEqual(found[0].website, "https://example.com")
-        self.assertIn("Google candidate", found[0].notes[0])
+        self.assertEqual(len(found), 2)
+        self.assertEqual(found[0].website, "https://www.cqc.org.uk/location/1")
+        self.assertEqual(found[0].regulator_url, found[0].website)
+        self.assertTrue(is_directory_url(found[0].website))
+        self.assertIn("Directory candidate", found[0].notes[0])
 
 
 if __name__ == "__main__":
