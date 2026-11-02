@@ -6,3 +6,10 @@ __pycache__/
 .streamlit/secrets.toml
 data/
 *.sqlite3*
+.env
+node_modules/
+.next/
+coverage/
+*.log
+services/api/.pytest_cache/
+services/api/htmlcov/

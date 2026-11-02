@@ -1,53 +1,57 @@
-# ProspectSZ · 14Digital
+# 14Digital Sales Outreach Agent
 
-A local Streamlit command centre for researching UK regulated care providers with 50–250 employees, verifying decision-maker emails and reviewing outreach drafted on behalf of Haider Zaidi. No messages are sent by this application.
+A production-oriented, human-in-the-loop system for UK B2B prospect discovery, evidence-led qualification, contact research, compliant drafting, approval, sending and follow-up. CQC CSV data is the dependable discovery source; Google Custom Search is not required.
 
-## Run
+## Architecture
 
-Python 3.12 is the tested runtime.
+- `apps/web`: Next.js and TypeScript operator console with Dashboard, Discovery, Prospects, Outreach Studio, Follow-ups and Settings.
+- `services/api`: FastAPI, SQLAlchemy, Alembic and a PostgreSQL-backed durable worker queue.
+- PostgreSQL stores companies, locations, identifiers, evidence, contacts, scores, compliance decisions, immutable revisions, approvals, messages, sequences, tasks, pipeline activity and audits.
+- Provider interfaces isolate Companies House, OpenAI and email. Email defaults to `mock`; live SMTP requires credentials and `LIVE_EMAIL_ENABLED=true`.
 
-Streamlit Community Cloud should use Python 3.12. The repository includes both `runtime.txt` and `.python-version`; when creating the app, choose Python 3.12 under Advanced settings if the deployment form offers a runtime selector.
+## Local startup
+
+1. Copy `.env.example` to `.env` and replace the passwords and application secret.
+2. Run `docker compose up --build`.
+3. Open `http://localhost:3000` and sign in with `ADMIN_EMAIL` and `ADMIN_PASSWORD`.
+
+The loopback API is at `http://localhost:8000`; documentation is at `/api/docs`. Startup runs Alembic and creates the configured admin if absent. The worker leases jobs with expiry and bounded retries, so work survives restarts.
+
+For development without Docker:
 
 ```bash
 python -m venv .venv
-.venv/bin/python -m pip install -r requirements.lock
-.venv/bin/streamlit run app.py --server.address 127.0.0.1
+.venv/bin/pip install -r services/api/requirements.txt
+cd services/api && PYTHONPATH=. ../../.venv/bin/alembic upgrade head
+PYTHONPATH=. ../../.venv/bin/uvicorn app.main:app --reload
+
+cd apps/web && npm ci && npm run dev
 ```
 
-Run from the repository root. SQLite data is stored in ignored `data/pipeline.sqlite3`. Set `PROSPECTSZ_DB` to select another local path. Live processes must be restarted after restoring a cloud environment.
+## Operator workflow
 
-## Integrations
+1. Create a Discovery run and upload the official CQC provider/location CSV. Imports are hashed, deduplicated, attributed and asynchronous. Bad rows retain rejection reasons; malformed files fail visibly.
+2. Verify the legal entity with Companies House, capture website evidence, add source-attributed contacts and calculate the deterministic score.
+3. Record subscriber type, legal-entity evidence, lawful basis and privacy notice. Unknown or incomplete assessments block sending.
+4. Create or AI-generate a draft. AI output is validated and stored pending review; source text is treated as untrusted data. Edit, approve and send are separate actions. Any edit invalidates approval.
+5. The final send gate rechecks approval, revision, corporate eligibility and suppression. LinkedIn remains manual. Replies and opt-outs stop pending sequences.
 
-Set these environment variables, or put them in the ignored `.streamlit/secrets.toml`:
+The app never guesses emails. A contact needs a public source URL and an explicit verification state. Missing research lowers confidence and appears in scoring explanations rather than becoming assumed fact.
 
-```toml
-GOOGLE_SEARCH_API_KEY = "your-key"
-GOOGLE_SEARCH_ENGINE_ID = "your-programmable-search-engine-id"
-```
+## Configuration
 
-Discovery opens an ordinary Google search for human review. Paste selected results into the app as `Company Name | https://official-website` lines, or upload the research CSV template. This avoids scraping Google and does not require or store a Google API key. Public provider websites must be reachable. Never commit contact exports.
+Keep secrets in environment variables and out of Git. Companies House and OpenAI are optional. `EMAIL_PROVIDER=mock` records simulated sends. For authorised SMTP, set `EMAIL_PROVIDER=smtp`, the `SMTP_*` variables and deliberately set `LIVE_EMAIL_ENABLED=true`.
 
-## Workflow
-
-1. Search Google and paste up to 100 reviewed `Company | URL` results into the app, or import a UTF-8 CSV using the downloadable research template. Search results are unqualified candidates; confirm the company website manually.
-2. Scan public team pages (at most five per company). The crawler honours robots.txt, spaces requests, limits response sizes and rejects private network destinations. If robots permissions cannot be established, use manual research. Extraction supports simple team cards; JavaScript-only websites need manual research. A discovered name is a candidate, not an asserted identity.
-3. Confirm the company, relevant UK regulator listing (CQC, CIW, Care Inspectorate Scotland or RQIA), 50–250 employee count with dated evidence, Operations Director or Registered Manager name, role and contact source. These facts require human evidence review; the app does not automatically verify company size or registration. Never invent missing facts.
-4. Use Google to locate an email published on the official company website. Confirm the exact company domain and save the source page. The app labels this `source_confirmed`: it establishes provenance, not deliverability. Do not guess addresses.
-5. Generate a deterministic, personalised draft under 150 words: accusation audit, tactical empathy, bespoke modules around existing systems, then a no-oriented question. Administrative problems are phrased conditionally; no company-specific pain is claimed without evidence. No language-model API is required.
-6. Edit, approve or reject each draft. Saving revisions clears approval. Editing research clears email verification and the draft. Approval records an explicit human review; it never sends anything.
-7. Download approved records as JSON or CSV, with `Company Name`, `Target Name`, `Verified Email`, `Drafted Message`. Pending, rejected and ineligible records are excluded. CSV cells are protected against formula execution.
-
-The command centre can run a bounded, on-demand batch of up to 50 research-stage companies. It ranks records using documented CQC need signals, 50–250 employee fit, role relevance, regulator evidence and contact verification. Names, perceived ethnicity and other protected characteristics never affect ranking. The score is a research priority, not a claim that a provider is suitable or likely to buy.
-
-The ranked research CSV is designed as a neutral interchange with Clay or another prospecting tool. Re-importing matching websites can update non-empty research fields and deliberately clears older verification, drafts and approval. Direct Clay/API integration is not enabled until the exact product, account method and field mapping are known.
-
-The local audit records research, verification attempts and approval actions. Delete a company in Research & enrich to remove its record and local audit. Downloaded copies must be managed separately. This is a single-operator application without login or multi-user access controls: keep it on loopback or behind authenticated infrastructure. Maintain your organisation's contact retention and suppression process before acting on exports.
+The Google error `This project does not have the access to Custom Search JSON API` comes from Google Cloud. The project owning that key cannot call the legacy API. This rebuild avoids the dependency through CQC imports. If a separate Google integration is retained, enable the API in the exact key-owning project, attach billing if required and permit the API in key restrictions.
 
 ## Validation
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v
-curl --fail http://127.0.0.1:8501/_stcore/health
+cd services/api && PYTHONPATH=. ../../.venv/bin/pytest -q
+cd apps/web && npm test && npm run build
+docker compose config
 ```
 
-Tests cover Google result handling, eligibility and approval gates, email-source handling, drafting, CSV safety, local-address rejection, persistence, and Streamlit page startup. Real Google and provider-website requests require configured access and must be validated separately. No sample contact is presented as a real or verified prospect.
+Tests cover authentication, migration presence, CQC grouping and deduplication, malformed input, deterministic evidence scoring, missing data, durable job leasing, follow-up stopping, approval invalidation, compliance and suppression gates, and send idempotency.
+
+See [operations.md](docs/operations.md) for backup, restore, deployment and incident checks, and [data-governance.md](docs/data-governance.md) for retention, subject requests and suppression handling.
