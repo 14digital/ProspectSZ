@@ -49,7 +49,16 @@ async def upload_cqc(run_id:str,file:UploadFile=File(...),source_url:str|None=No
     content=await file.read(25_000_001)
     if len(content)>25_000_000: raise HTTPException(413,"CSV exceeds 25 MB")
     digest=hashlib.sha256(content).hexdigest(); existing=db.scalar(select(SourceImport).where(SourceImport.sha256==digest))
-    if existing: return {"source_import_id":existing.id,"job_id":None,"duplicate":True}
+    if existing:
+        if existing.status!="FAILED": return {"source_import_id":existing.id,"job_id":None,"duplicate":True}
+        existing.discovery_run_id=run.id; existing.status="PENDING"; existing.error=None; existing.imported_at=None
+        previous=db.scalar(select(Job).where(Job.idempotency_key==f"import-cqc:{digest}"))
+        if previous:
+            previous.state=JobState.QUEUED; previous.attempts=0; previous.available_at=datetime.now(timezone.utc); previous.leased_until=None; previous.worker_id=None; previous.last_error=None; previous.result=None; previous.payload={"source_import_id":existing.id,"discovery_run_id":run.id}
+        else:
+            previous=enqueue(db,"IMPORT_CQC",{"source_import_id":existing.id,"discovery_run_id":run.id},f"import-cqc:{digest}")
+        run.state="QUEUED"; run.error=None; audit(db,user.id,"source_import",existing.id,"RETRIED",{"sha256":digest,"filename":file.filename}); db.commit()
+        return {"source_import_id":existing.id,"job_id":previous.id,"duplicate":False,"retried":True}
     folder=get_settings().upload_dir; folder.mkdir(parents=True,exist_ok=True); path=folder/f"{digest}.csv"; path.write_bytes(content)
     source=SourceImport(discovery_run_id=run.id,source_type="CQC_CSV",source_url=source_url,version_label=file.filename,file_path=str(path),sha256=digest); db.add(source); db.flush()
     job=enqueue(db,"IMPORT_CQC",{"source_import_id":source.id,"discovery_run_id":run.id},f"import-cqc:{digest}"); run.state="QUEUED"; audit(db,user.id,"source_import",source.id,"UPLOADED",{"sha256":digest,"filename":file.filename}); db.commit()
