@@ -8,9 +8,9 @@ from app.models.entities import Company, CompanyIdentifier, CompanyLocation, Dis
 
 LICENCE="CQC data reused under its published data terms; retain source URL, import date and identifiers."
 ALIASES={
- "provider_id":["provider id","provider_id","providerid"], "location_id":["location id","location_id","locationid"],
- "provider_name":["provider name","provider_name","providername","organisation name"], "location_name":["location name","location_name","locationname"],
- "service_type":["service type","service_type","regulated activities","care home?"], "postcode":["postcode","postal code"],
+ "provider_id":["provider id","provider_id","providerid","cqc provider id (for office use only)"], "location_id":["location id","location_id","locationid","cqc location id (for office use only)"],
+ "provider_name":["provider name","provider_name","providername","organisation name"], "location_name":["location name","location_name","locationname","name"],
+ "service_type":["service type","service types","service_type","regulated activities","care home?"], "postcode":["postcode","postal code"],
  "address":["address","location address"], "region":["region","local authority"], "rating":["overall rating","rating"], "website":["website","web address"]}
 
 def norm(v:str)->str: return re.sub(r"[^a-z0-9]+"," ",v.lower()).strip()
@@ -29,8 +29,17 @@ def import_file(db:Session, source:SourceImport, run:DiscoveryRun):
     created=locations=rejected=0
     try:
         with path.open("r",encoding="utf-8-sig",newline="") as handle:
-            reader=csv.DictReader(handle)
-            if not reader.fieldnames: raise ValueError("CSV has no header row")
+            rows=csv.reader(handle)
+            header=None
+            for candidate in (next(rows,None) for _ in range(25)):
+                if candidate is None: break
+                names={norm(value) for value in candidate if value}
+                has_name=any(norm(alias) in names for alias in ALIASES["provider_name"])
+                has_id=any(norm(alias) in names for key in ("provider_id","location_id") for alias in ALIASES[key])
+                if has_name and has_id:
+                    header=candidate; break
+            if not header: raise ValueError("CSV has no recognised CQC header row in its first 25 rows")
+            reader=csv.DictReader(handle,fieldnames=header)
             headers={norm(value) for value in reader.fieldnames if value}
             has_provider_name=any(norm(alias) in headers for alias in ALIASES["provider_name"])
             has_identifier=any(norm(alias) in headers for key in ("provider_id","location_id") for alias in ALIASES[key])
