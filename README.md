@@ -25,6 +25,8 @@ GOOGLE_SEARCH_ENGINE_ID = "your-programmable-search-engine-id"
 
 Automatic discovery uses the official Google Programmable Search JSON API at `www.googleapis.com`; it does not scrape Google result pages. Create a Programmable Search Engine configured to search the web, then set its engine ID and API key securely. Google may impose quotas or charges. Without these settings, the dashboard opens the query in ordinary Google and accepts CSV results manually. Public provider websites must also be reachable. Never commit keys or contact exports.
 
+If environment publication is unavailable, paste the API key into the masked **Google API key** field in the Streamlit sidebar. That value remains in the current Streamlit browser session and is not saved to SQLite or Git. The application defaults to search engine ID `86e430f9380d94ea2`; environment configuration can override it.
+
 ## Workflow
 
 1. Search Google manually or use its official Programmable Search API to inspect up to 50 results per run. You can also import a UTF-8 CSV using the downloadable research template. Search results are unqualified candidates and may include directories; confirm the company website manually.

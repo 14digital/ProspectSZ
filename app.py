@@ -12,15 +12,24 @@ from prospectsz.store import Store
 
 st.set_page_config(page_title="ProspectSZ · 14Digital", page_icon="◈", layout="wide")
 
+DEFAULT_GOOGLE_SEARCH_ENGINE_ID = "86e430f9380d94ea2"
+
 
 def key(name):
     value = os.getenv(name, "")
     if value:
         return value
     try:
-        return st.secrets.get(name, "")
+        value = st.secrets.get(name, "")
+        if value:
+            return value
     except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
-        return ""
+        pass
+    if name == "GOOGLE_SEARCH_API_KEY":
+        return st.session_state.get("google_api_key_session", "")
+    if name == "GOOGLE_SEARCH_ENGINE_ID":
+        return DEFAULT_GOOGLE_SEARCH_ENGINE_ID
+    return ""
 
 
 store = Store()
@@ -31,9 +40,11 @@ with st.sidebar:
     page = st.radio("Workspace", ["Command centre", "Discover & import", "Research & enrich", "Approval queue", "Export & audit"])
     st.divider()
     st.caption("UK regulated care · 50–250 employees")
+    st.text_input("Google API key", type="password", key="google_api_key_session",
+                  help="Used only for this browser session and sent only to Google's Custom Search API.")
     google_ready = bool(key("GOOGLE_SEARCH_API_KEY") and key("GOOGLE_SEARCH_ENGINE_ID"))
     st.write("Google Search: " + ("configured" if google_ready else "manual mode"))
-    st.caption("API keys belong in environment variables or .streamlit/secrets.toml. Never commit them.")
+    st.caption("The session key is not written to the database or repository. Environment secrets remain supported.")
 
 st.title(page)
 st.caption("From public business research to thoughtful outreach — every message reviewed by a person.")
@@ -41,7 +52,7 @@ st.caption("From public business research to thoughtful outreach — every messa
 if page == "Command centre":
     cols = st.columns(4)
     for col, label, value in zip(cols, ["Companies", "Verified contacts", "Awaiting review", "Approved"], [
-        len(prospects), sum(p.verification_status == "verified" for p in prospects),
+        len(prospects), sum(p.verification_status in {"verified", "source_confirmed"} for p in prospects),
         sum(p.review_status == "pending_approval" for p in prospects), sum(p.review_status == "approved" for p in prospects)]):
         col.metric(label, value)
     st.subheader("Your pipeline")
