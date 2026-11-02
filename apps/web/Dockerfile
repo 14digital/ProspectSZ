@@ -18,7 +18,6 @@ ENV NODE_ENV=production
 COPY --chown=node:node --from=build /app/package.json ./
 COPY --chown=node:node --from=build /app/node_modules ./node_modules
 COPY --chown=node:node --from=build /app/.next ./.next
-COPY --chown=node:node --from=build /app/public ./public
 USER node
 EXPOSE 3000
 CMD ["npm", "start"]
