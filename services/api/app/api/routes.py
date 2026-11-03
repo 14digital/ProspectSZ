@@ -133,7 +133,9 @@ def research_contacts(company_id:str,db:Session=Depends(get_db),user=Depends(cur
     if not company: raise HTTPException(404,"Company not found")
     if not company.website: raise HTTPException(409,"Confirm the official company website first")
     try: candidates,notes=research_site(company.website)
-    except ResearchError as exc: raise HTTPException(422,str(exc)) from None
+    except ResearchError as exc:
+        audit(db,user.id,"company",company.id,"CONTACT_RESEARCH_BLOCKED",{"reason":str(exc)}); db.commit()
+        return {"candidates":[],"notes":[],"manual_required":True,"message":f"Automatic scan unavailable: {exc}. Open the website or targeted Google search and save the evidence manually."}
     saved=[]
     for item in candidates:
         contact=db.scalar(select(Contact).where(Contact.company_id==company.id,func.lower(Contact.name)==item.name.lower(),func.lower(Contact.role)==item.role.lower()))
