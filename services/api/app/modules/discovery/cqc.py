@@ -63,7 +63,7 @@ def import_file(db:Session, source:SourceImport, run:DiscoveryRun):
                 if location_id and not db.scalar(select(CompanyLocation).where(CompanyLocation.cqc_location_id==location_id)):
                     db.add(CompanyLocation(company_id=company.id,cqc_location_id=location_id,cqc_provider_id=provider_id or None,name=location_name or provider_name,address=pick(row,"address") or None,postcode=pick(row,"postcode") or None,region=pick(row,"region") or None,service_type=pick(row,"service_type") or None,cqc_rating=pick(row,"rating") or None,source_url=source.source_url)); locations+=1
                 db.add(record)
-        source.status="IMPORTED"; source.imported_at=datetime.now(timezone.utc); run.state="SUCCEEDED"; run.discovered_count=created
+        source.status="IMPORTED"; source.error=None; source.imported_at=datetime.now(timezone.utc); run.state="SUCCEEDED"; run.error=None; run.discovered_count=created
         db.commit(); return {"companies_created":created,"locations_created":locations,"records_rejected":rejected,"licence":LICENCE}
     except Exception as exc:
         db.rollback(); source=db.get(SourceImport,source.id); run=db.get(DiscoveryRun,run.id); source.status="FAILED"; source.error=str(exc)[:1000]; run.state="FAILED"; run.error=str(exc)[:1000]; db.commit(); raise

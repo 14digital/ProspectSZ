@@ -15,6 +15,7 @@ Surrey Downs Homecare Ltd,RH4 1PT,https://www.sdhomecare.co.uk,Homecare agencies
 """
 def test_csv_import_groups_locations_and_deduplicates(client,auth,tmp_path):
     run=client.post("/api/v1/discovery-runs",headers=auth,json={"source":"CQC_CSV","target_count":20}).json()
+    assert run["state"]=="AWAITING_UPLOAD"
     response=client.post(f"/api/v1/discovery-runs/{run['id']}/upload",headers=auth,files={"file":("cqc.csv",CQC,"text/csv")})
     assert response.status_code==202
     with SessionLocal() as db:

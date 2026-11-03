@@ -30,7 +30,7 @@ def login(form:OAuth2PasswordRequestForm=Depends(),db:Session=Depends(get_db)):
 
 @router.post("/discovery-runs",response_model=DiscoveryOut,status_code=202)
 def create_run(data:DiscoveryCreate,db:Session=Depends(get_db),user=Depends(current_user)):
-    run=DiscoveryRun(campaign_id=data.campaign_id,source=data.source,target_count=data.target_count); db.add(run); db.flush(); audit(db,user.id,"discovery_run",run.id,"CREATED",data.model_dump()); db.commit(); return run
+    run=DiscoveryRun(campaign_id=data.campaign_id,source=data.source,target_count=data.target_count,state="AWAITING_UPLOAD"); db.add(run); db.flush(); audit(db,user.id,"discovery_run",run.id,"CREATED",data.model_dump()); db.commit(); return run
 @router.get("/discovery-runs",response_model=list[DiscoveryOut])
 def runs(db:Session=Depends(get_db),_=Depends(current_user)): return db.scalars(select(DiscoveryRun).order_by(DiscoveryRun.created_at.desc()).limit(100)).all()
 @router.get("/discovery-runs/{run_id}",response_model=DiscoveryOut)
