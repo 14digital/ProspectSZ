@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     companies_house_api_key: str | None = None
     serper_api_key: str | None = None
+    brave_search_api_key: str | None = None
     google_search_api_key: str | None = None
     google_search_engine_id: str | None = None
     email_provider: str = "mock"

@@ -281,7 +281,7 @@ def overview(db:Session=Depends(get_db),_=Depends(current_user)):
 def conversions(db:Session=Depends(get_db),_=Depends(current_user)): return {str(stage):count for stage,count in db.execute(select(Company.pipeline_stage,func.count()).group_by(Company.pipeline_stage)).all()}
 @router.get("/integrations/status")
 def integrations(_=Depends(current_user)): 
-    s=get_settings(); return {"companies_house":{"configured":bool(s.companies_house_api_key)},"openai":{"configured":bool(s.openai_api_key)},"search":{"configured":bool(s.serper_api_key or (s.google_search_api_key and s.google_search_engine_id)),"provider":"serper" if s.serper_api_key else "google_custom_search" if s.google_search_api_key and s.google_search_engine_id else None},"email":{"provider":s.email_provider,"live_enabled":s.live_email_enabled}}
+    s=get_settings(); providers=[name for name,ready in [("brave",s.brave_search_api_key),("google_custom_search",s.google_search_api_key and s.google_search_engine_id),("openai_web_search",s.openai_api_key),("serper",s.serper_api_key)] if ready]; return {"companies_house":{"configured":bool(s.companies_house_api_key)},"openai":{"configured":bool(s.openai_api_key)},"search":{"configured":bool(providers),"providers":providers},"email":{"provider":s.email_provider,"live_enabled":s.live_email_enabled}}
 @router.get("/jobs/{job_id}")
 def job(job_id:str,db:Session=Depends(get_db),_=Depends(current_user)):
     value=db.get(Job,job_id)
