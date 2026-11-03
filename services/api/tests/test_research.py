@@ -1,5 +1,6 @@
 from bs4 import BeautifulSoup
-from app.modules.research.site import candidates
+from app.integrations.search import SearchResult, is_linkedin_profile
+from app.modules.research.site import candidates, candidates_from_search
 
 def test_decision_maker_extracted_with_website_evidence_and_linkedin():
     html="""<section class='team-card'><h2>Susan Olueh</h2><p>Founder &amp; Managing Director</p>
@@ -12,3 +13,10 @@ def test_decision_maker_extracted_with_website_evidence_and_linkedin():
 def test_generic_team_copy_does_not_invent_a_person():
     found=candidates(BeautifulSoup("<section><h2>Our Team</h2><p>Our managing director leads quality.</p></section>","html.parser"),"https://example.com/about")
     assert found==[]
+
+def test_indexed_team_result_produces_candidate_and_linkedin_is_validated():
+    results=[SearchResult("Meet the Team – Example Care","Susan Olueh, Founder & Managing Director, leads the service.","https://example.com/meet-the-team")]
+    found=candidates_from_search(results,"example.com")
+    assert found[0].name=="Susan Olueh" and found[0].role=="Founder & Managing Director"
+    assert is_linkedin_profile("https://www.linkedin.com/in/susan-olueh")
+    assert not is_linkedin_profile("https://www.linkedin.com/company/example")

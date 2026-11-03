@@ -2,7 +2,7 @@ from __future__ import annotations
 import hashlib, json
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import func, select
@@ -13,13 +13,14 @@ from app.core.security import current_user, require_admin, token_for, verify_pas
 from app.integrations.companies_house import CompaniesHouseConnector
 from app.integrations.email import provider
 from app.integrations.ai import generate_draft
+from app.integrations.search import SearchProvider, SearchUnavailable, is_linkedin_profile
 from app.models.entities import *
 from app.modules.compliance.service import assess_eligibility
 from app.modules.followups.service import stop_for_reply
 from app.modules.jobs import enqueue
 from app.modules.outreach.service import add_revision, audit
 from app.modules.qualification.service import calculate
-from app.modules.research.site import ResearchError, research_site
+from app.modules.research.site import ResearchError, candidates_from_search, research_site
 from app.schemas.contracts import *
 
 router=APIRouter()
@@ -132,19 +133,32 @@ def research_contacts(company_id:str,db:Session=Depends(get_db),user=Depends(cur
     company=db.get(Company,company_id)
     if not company: raise HTTPException(404,"Company not found")
     if not company.website: raise HTTPException(409,"Confirm the official company website first")
+    search=SearchProvider(); search_warning=None
     try: candidates,notes=research_site(company.website)
     except ResearchError as exc:
-        audit(db,user.id,"company",company.id,"CONTACT_RESEARCH_BLOCKED",{"reason":str(exc)}); db.commit()
-        return {"candidates":[],"notes":[],"manual_required":True,"message":f"Automatic scan unavailable: {exc}. Open the website or targeted Google search and save the evidence manually."}
+        notes=[f"Direct website scan unavailable: {exc}"]
+        try:
+            host=(urlparse(company.website).hostname or "").removeprefix("www.")
+            results=search.search(f'site:{host} ("registered manager" OR founder OR "managing director" OR "operations director" OR owner)',10)
+            candidates=candidates_from_search(results,host)
+        except SearchUnavailable as search_exc:
+            raise HTTPException(409,str(search_exc)) from None
     saved=[]
     for item in candidates:
+        linkedin=item.linkedin_url
+        if not linkedin:
+            try:
+                results=search.search(f'"{item.name}" "{company.name}" site:linkedin.com/in',10)
+                name_tokens=[part.lower() for part in item.name.split()]
+                linkedin=next((result.url for result in results if is_linkedin_profile(result.url) and all(token in f"{result.title} {result.snippet}".lower() for token in name_tokens)),None)
+            except SearchUnavailable as exc: search_warning=str(exc)
         contact=db.scalar(select(Contact).where(Contact.company_id==company.id,func.lower(Contact.name)==item.name.lower(),func.lower(Contact.role)==item.role.lower()))
         if not contact:
-            contact=Contact(company_id=company.id,name=item.name,role=item.role,linkedin_url=item.linkedin_url,verification_status="SOURCE_CONFIRMED",outreach_eligible=False); db.add(contact); db.flush(); db.add(ContactSource(contact_id=contact.id,url=item.source_url,channel="PUBLIC_WEBSITE"))
-        elif item.linkedin_url and not contact.linkedin_url: contact.linkedin_url=item.linkedin_url
+            contact=Contact(company_id=company.id,name=item.name,role=item.role,linkedin_url=linkedin,verification_status="SEARCH_MATCH_REVIEW" if linkedin else "SOURCE_CONFIRMED",outreach_eligible=False); db.add(contact); db.flush(); db.add(ContactSource(contact_id=contact.id,url=item.source_url,channel="PUBLIC_WEBSITE"))
+        elif linkedin and not contact.linkedin_url: contact.linkedin_url=linkedin; contact.verification_status="SEARCH_MATCH_REVIEW"
         saved.append({"id":contact.id,"name":contact.name,"role":contact.role,"source_url":item.source_url,"linkedin_url":contact.linkedin_url,"version":contact.version,"google_search_url":f"https://www.google.com/search?q={quote_plus(item.name+' '+company.name+' LinkedIn')}"})
     audit(db,user.id,"company",company.id,"CONTACT_RESEARCHED",{"candidate_count":len(saved),"pages_skipped":len(notes)}); db.commit()
-    return {"candidates":saved,"notes":notes,"message":"No decision-maker candidate found; inspect the website manually" if not saved else None}
+    return {"candidates":saved,"notes":notes,"message":("No decision-maker candidate found from public indexed evidence" if not saved else search_warning),"fully_automatic":not search_warning}
 @router.get("/companies/{company_id}/companies-house")
 def company_house(company_id:str,db:Session=Depends(get_db),_=Depends(current_user)):
     company=db.get(Company,company_id)
@@ -267,7 +281,7 @@ def overview(db:Session=Depends(get_db),_=Depends(current_user)):
 def conversions(db:Session=Depends(get_db),_=Depends(current_user)): return {str(stage):count for stage,count in db.execute(select(Company.pipeline_stage,func.count()).group_by(Company.pipeline_stage)).all()}
 @router.get("/integrations/status")
 def integrations(_=Depends(current_user)): 
-    s=get_settings(); return {"companies_house":{"configured":bool(s.companies_house_api_key)},"openai":{"configured":bool(s.openai_api_key)},"email":{"provider":s.email_provider,"live_enabled":s.live_email_enabled}}
+    s=get_settings(); return {"companies_house":{"configured":bool(s.companies_house_api_key)},"openai":{"configured":bool(s.openai_api_key)},"search":{"configured":bool(s.serper_api_key or (s.google_search_api_key and s.google_search_engine_id)),"provider":"serper" if s.serper_api_key else "google_custom_search" if s.google_search_api_key and s.google_search_engine_id else None},"email":{"provider":s.email_provider,"live_enabled":s.live_email_enabled}}
 @router.get("/jobs/{job_id}")
 def job(job_id:str,db:Session=Depends(get_db),_=Depends(current_user)):
     value=db.get(Job,job_id)

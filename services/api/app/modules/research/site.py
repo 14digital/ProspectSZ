@@ -77,6 +77,20 @@ def candidates(soup:BeautifulSoup,source:str)->list[Candidate]:
                 if item not in found: found.append(item)
     return found
 
+def candidates_from_search(results:list,company_host:str)->list[Candidate]:
+    found=[]
+    for result in results:
+        if urlparse(result.url).hostname not in {company_host,"www."+company_host.removeprefix("www.")} and (urlparse(result.url).hostname or "").removeprefix("www.")!=company_host.removeprefix("www."): continue
+        text=f"{result.title}. {result.snippet}"
+        role=ROLE.search(text)
+        if not role: continue
+        names=[match.group(0) for match in NAME.finditer(text) if match.group(0).lower() not in GENERIC_NAMES and not ROLE.search(match.group(0))]
+        if not names: continue
+        name=min(names,key=lambda value:abs(text.lower().find(value.lower())-role.start()))
+        item=Candidate(name,role.group(0).title(),result.url,None)
+        if not any(old.name.lower()==item.name.lower() and old.role.lower()==item.role.lower() for old in found): found.append(item)
+    return found
+
 def research_site(website:str)->tuple[list[Candidate],list[str]]:
     reader=Reader(); notes=[]; home=reader.page(website); pages=[(website,home)]
     origin=urlparse(website).hostname
