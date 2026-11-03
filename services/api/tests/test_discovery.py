@@ -10,8 +10,8 @@ P2,L3,Second Care,Second Home,Residential care,B3 3CC,Good
 """
 CQC_SEARCH="""We found 7538 results for Homecare agencies. These results are listed below.
 
-Name,Postcode,Website,Service types,Provider name,CQC Provider ID (for office use only),CQC Location ID (for office use only)
-Surrey Downs Homecare Ltd,RH4 1PT,https://www.sdhomecare.co.uk,Homecare agencies,Surrey Downs Homecare Ltd,1-13081650040,1-13447576832
+Name,Postcode,Phone number,Website,Service types,Provider name,CQC Provider ID (for office use only),CQC Location ID (for office use only)
+Surrey Downs Homecare Ltd,RH4 1PT,07972108864,https://www.sdhomecare.co.uk,Homecare agencies,Surrey Downs Homecare Ltd,1-13081650040,1-13447576832
 """
 def test_csv_import_groups_locations_and_deduplicates(client,auth,tmp_path):
     run=client.post("/api/v1/discovery-runs",headers=auth,json={"source":"CQC_CSV","target_count":20}).json()
@@ -50,3 +50,9 @@ def test_official_cqc_search_export_with_preamble(client,auth):
         assert result["companies_created"]==1 and result["locations_created"]==1
         company=db.query(Company).filter_by(normalized_name="surrey downs homecare ltd").one()
         assert company.website=="https://www.sdhomecare.co.uk" and company.locations[0].service_type=="Homecare agencies"
+        assert company.locations[0].phone=="07972108864"
+
+def test_empty_discovery_run_can_be_deleted(client,auth):
+    run=client.post("/api/v1/discovery-runs",headers=auth,json={}).json()
+    assert client.delete(f"/api/v1/discovery-runs/{run['id']}",headers=auth).status_code==204
+    assert client.get(f"/api/v1/discovery-runs/{run['id']}",headers=auth).status_code==404

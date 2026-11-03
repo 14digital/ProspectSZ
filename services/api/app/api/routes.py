@@ -35,6 +35,13 @@ def create_run(data:DiscoveryCreate,db:Session=Depends(get_db),user=Depends(curr
 def runs(db:Session=Depends(get_db),_=Depends(current_user)): return db.scalars(select(DiscoveryRun).order_by(DiscoveryRun.created_at.desc()).limit(100)).all()
 @router.get("/discovery-runs/{run_id}",response_model=DiscoveryOut)
 def run(run_id:str,db:Session=Depends(get_db),_=Depends(current_user)): return db.get(DiscoveryRun,run_id) or (_ for _ in ()).throw(HTTPException(404,"Run not found"))
+@router.delete("/discovery-runs/{run_id}",status_code=204)
+def delete_run(run_id:str,db:Session=Depends(get_db),user=Depends(current_user)):
+    run=db.get(DiscoveryRun,run_id)
+    if not run: raise HTTPException(404,"Run not found")
+    if db.scalar(select(func.count()).select_from(SourceImport).where(SourceImport.discovery_run_id==run_id)):
+        raise HTTPException(409,"A run with an uploaded source cannot be deleted")
+    audit(db,user.id,"discovery_run",run.id,"DELETED"); db.delete(run); db.commit()
 @router.post("/discovery-runs/{run_id}/cancel",response_model=DiscoveryOut)
 def cancel_run(run_id:str,db:Session=Depends(get_db),user=Depends(current_user)):
     run=db.get(DiscoveryRun,run_id)
@@ -76,6 +83,13 @@ def company(company_id:str,db:Session=Depends(get_db),_=Depends(current_user)):
     value=db.get(Company,company_id)
     if not value: raise HTTPException(404,"Company not found")
     return value
+@router.get("/companies/{company_id}/dossier")
+def company_dossier(company_id:str,db:Session=Depends(get_db),_=Depends(current_user)):
+    company=db.get(Company,company_id)
+    if not company: raise HTTPException(404,"Company not found")
+    locations=db.scalars(select(CompanyLocation).where(CompanyLocation.company_id==company_id).order_by(CompanyLocation.name)).all()
+    contacts=db.scalars(select(Contact).where(Contact.company_id==company_id).order_by(Contact.name)).all()
+    return {"company":CompanyOut.model_validate(company).model_dump(mode="json"),"locations":[{"id":row.id,"name":row.name,"postcode":row.postcode,"phone":row.phone,"region":row.region,"service_type":row.service_type,"cqc_rating":row.cqc_rating,"cqc_location_id":row.cqc_location_id,"source_url":row.source_url} for row in locations],"contacts":[ContactOut.model_validate(row).model_dump(mode="json") for row in contacts]}
 @router.patch("/companies/{company_id}",response_model=CompanyOut)
 def patch_company(company_id:str,data:CompanyPatch,db:Session=Depends(get_db),user=Depends(current_user)):
     company=db.get(Company,company_id)

@@ -10,7 +10,7 @@ LICENCE="CQC data reused under its published data terms; retain source URL, impo
 ALIASES={
  "provider_id":["provider id","provider_id","providerid","cqc provider id (for office use only)"], "location_id":["location id","location_id","locationid","cqc location id (for office use only)"],
  "provider_name":["provider name","provider_name","providername","organisation name"], "location_name":["location name","location_name","locationname","name"],
- "service_type":["service type","service types","service_type","regulated activities","care home?"], "postcode":["postcode","postal code"],
+ "service_type":["service type","service types","service_type","regulated activities","care home?"], "postcode":["postcode","postal code"], "phone":["phone","phone number","telephone"],
  "address":["address","location address"], "region":["region","local authority"], "rating":["overall rating","rating"], "website":["website","web address"]}
 
 def norm(v:str)->str: return re.sub(r"[^a-z0-9]+"," ",v.lower()).strip()
@@ -61,7 +61,7 @@ def import_file(db:Session, source:SourceImport, run:DiscoveryRun):
                 if provider_id and not db.scalar(select(CompanyIdentifier).where(CompanyIdentifier.kind=="CQC_PROVIDER_ID",CompanyIdentifier.value==provider_id)):
                     db.add(CompanyIdentifier(company_id=company.id,kind="CQC_PROVIDER_ID",value=provider_id,source_url=source.source_url)); db.flush()
                 if location_id and not db.scalar(select(CompanyLocation).where(CompanyLocation.cqc_location_id==location_id)):
-                    db.add(CompanyLocation(company_id=company.id,cqc_location_id=location_id,cqc_provider_id=provider_id or None,name=location_name or provider_name,address=pick(row,"address") or None,postcode=pick(row,"postcode") or None,region=pick(row,"region") or None,service_type=pick(row,"service_type") or None,cqc_rating=pick(row,"rating") or None,source_url=source.source_url)); locations+=1
+                    db.add(CompanyLocation(company_id=company.id,cqc_location_id=location_id,cqc_provider_id=provider_id or None,name=location_name or provider_name,address=pick(row,"address") or None,postcode=pick(row,"postcode") or None,phone=pick(row,"phone") or None,region=pick(row,"region") or None,service_type=pick(row,"service_type") or None,cqc_rating=pick(row,"rating") or None,source_url=source.source_url)); locations+=1
                 db.add(record)
         source.status="IMPORTED"; source.error=None; source.imported_at=datetime.now(timezone.utc); run.state="SUCCEEDED"; run.error=None; run.discovered_count=created
         db.commit(); return {"companies_created":created,"locations_created":locations,"records_rejected":rejected,"licence":LICENCE}
