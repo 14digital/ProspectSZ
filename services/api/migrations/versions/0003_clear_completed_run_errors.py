@@ -12,6 +12,7 @@ depends_on=None
 
 def upgrade():
     op.execute("UPDATE discovery_runs SET error = NULL WHERE state = 'SUCCEEDED'")
+    op.execute("UPDATE discovery_runs SET state = 'AWAITING_UPLOAD' WHERE state = 'QUEUED' AND NOT EXISTS (SELECT 1 FROM source_imports WHERE source_imports.discovery_run_id = discovery_runs.id)")
 
 def downgrade():
     pass
