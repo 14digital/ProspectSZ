@@ -2,6 +2,7 @@ from __future__ import annotations
 import hashlib, json
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote_plus
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import func, select
@@ -18,6 +19,7 @@ from app.modules.followups.service import stop_for_reply
 from app.modules.jobs import enqueue
 from app.modules.outreach.service import add_revision, audit
 from app.modules.qualification.service import calculate
+from app.modules.research.site import ResearchError, research_site
 from app.schemas.contracts import *
 
 router=APIRouter()
@@ -89,7 +91,10 @@ def company_dossier(company_id:str,db:Session=Depends(get_db),_=Depends(current_
     if not company: raise HTTPException(404,"Company not found")
     locations=db.scalars(select(CompanyLocation).where(CompanyLocation.company_id==company_id).order_by(CompanyLocation.name)).all()
     contacts=db.scalars(select(Contact).where(Contact.company_id==company_id).order_by(Contact.name)).all()
-    return {"company":CompanyOut.model_validate(company).model_dump(mode="json"),"locations":[{"id":row.id,"name":row.name,"postcode":row.postcode,"phone":row.phone,"region":row.region,"service_type":row.service_type,"cqc_rating":row.cqc_rating,"cqc_location_id":row.cqc_location_id,"source_url":row.source_url} for row in locations],"contacts":[ContactOut.model_validate(row).model_dump(mode="json") for row in contacts]}
+    contact_rows=[]
+    for row in contacts:
+        value=ContactOut.model_validate(row).model_dump(mode="json"); source=db.scalar(select(ContactSource).where(ContactSource.contact_id==row.id).order_by(ContactSource.collected_at.desc())); value["source_url"]=source.url if source else None; contact_rows.append(value)
+    return {"company":CompanyOut.model_validate(company).model_dump(mode="json"),"locations":[{"id":row.id,"name":row.name,"postcode":row.postcode,"phone":row.phone,"region":row.region,"service_type":row.service_type,"cqc_rating":row.cqc_rating,"cqc_location_id":row.cqc_location_id,"source_url":row.source_url} for row in locations],"contacts":contact_rows}
 @router.patch("/companies/{company_id}",response_model=CompanyOut)
 def patch_company(company_id:str,data:CompanyPatch,db:Session=Depends(get_db),user=Depends(current_user)):
     company=db.get(Company,company_id)
@@ -120,8 +125,24 @@ def patch_contact(contact_id:str,data:ContactPatch,db:Session=Depends(get_db),us
     contact=db.get(Contact,contact_id)
     if not contact: raise HTTPException(404,"Contact not found")
     if contact.version!=data.version: raise HTTPException(409,"Contact was changed by another user")
-    for k,v in data.model_dump(exclude={"version"},exclude_unset=True).items(): setattr(contact,k,v)
+    for k,v in data.model_dump(exclude={"version"},exclude_unset=True).items(): setattr(contact,k,str(v) if k=="linkedin_url" and v else v)
     contact.version+=1; audit(db,user.id,"contact",contact.id,"UPDATED"); db.commit(); return contact
+@router.post("/companies/{company_id}/research-contacts")
+def research_contacts(company_id:str,db:Session=Depends(get_db),user=Depends(current_user)):
+    company=db.get(Company,company_id)
+    if not company: raise HTTPException(404,"Company not found")
+    if not company.website: raise HTTPException(409,"Confirm the official company website first")
+    try: candidates,notes=research_site(company.website)
+    except ResearchError as exc: raise HTTPException(422,str(exc)) from None
+    saved=[]
+    for item in candidates:
+        contact=db.scalar(select(Contact).where(Contact.company_id==company.id,func.lower(Contact.name)==item.name.lower(),func.lower(Contact.role)==item.role.lower()))
+        if not contact:
+            contact=Contact(company_id=company.id,name=item.name,role=item.role,linkedin_url=item.linkedin_url,verification_status="SOURCE_CONFIRMED",outreach_eligible=False); db.add(contact); db.flush(); db.add(ContactSource(contact_id=contact.id,url=item.source_url,channel="PUBLIC_WEBSITE"))
+        elif item.linkedin_url and not contact.linkedin_url: contact.linkedin_url=item.linkedin_url
+        saved.append({"id":contact.id,"name":contact.name,"role":contact.role,"source_url":item.source_url,"linkedin_url":contact.linkedin_url,"version":contact.version,"google_search_url":f"https://www.google.com/search?q={quote_plus(item.name+' '+company.name+' LinkedIn')}"})
+    audit(db,user.id,"company",company.id,"CONTACT_RESEARCHED",{"candidate_count":len(saved),"pages_skipped":len(notes)}); db.commit()
+    return {"candidates":saved,"notes":notes,"message":"No decision-maker candidate found; inspect the website manually" if not saved else None}
 @router.get("/companies/{company_id}/companies-house")
 def company_house(company_id:str,db:Session=Depends(get_db),_=Depends(current_user)):
     company=db.get(Company,company_id)
