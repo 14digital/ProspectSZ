@@ -6,7 +6,7 @@ from urllib.parse import quote_plus, urlparse
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import current_user, require_admin, token_for, verify_password
@@ -19,7 +19,7 @@ from app.modules.compliance.service import assess_eligibility
 from app.modules.followups.service import stop_for_reply
 from app.modules.jobs import enqueue
 from app.modules.outreach.service import add_revision, audit
-from app.modules.qualification.service import calculate
+from app.modules.qualification.service import PRIORITY_RULE_VERSION, calculate, seed_priority
 from app.modules.research.site import ResearchError, candidates_from_search, research_site
 from app.schemas.contracts import *
 
@@ -81,6 +81,22 @@ def companies(limit:int=Query(50,ge=1,le=200),offset:int=Query(0,ge=0),stage:str
     if q: stmt=stmt.where(Company.name.ilike(f"%{q}%")); count=count.where(Company.name.ilike(f"%{q}%"))
     items=db.scalars(stmt.order_by(Company.created_at.desc()).limit(limit).offset(offset)).all()
     return Page(items=[CompanyOut.model_validate(i).model_dump() for i in items],total=db.scalar(count) or 0,limit=limit,offset=offset)
+@router.get("/companies/priorities")
+def company_priorities(limit:int=Query(100,ge=1,le=500),q:str|None=None,db:Session=Depends(get_db),_=Depends(current_user)):
+    stmt=select(Company).options(selectinload(Company.locations))
+    if q: stmt=stmt.where(Company.name.ilike(f"%{q}%"))
+    companies=db.scalars(stmt).unique().all()
+    ranked=[]
+    for company in companies:
+        score,reasons=seed_priority(company)
+        ranked.append({
+            **CompanyOut.model_validate(company).model_dump(mode="json"),
+            "priority_score":score,
+            "priority_reasons":reasons,
+            "rule_version":PRIORITY_RULE_VERSION,
+        })
+    ranked.sort(key=lambda item:(-item["priority_score"],item["name"].lower()))
+    return {"items":ranked[:limit],"total":len(ranked),"rule_version":PRIORITY_RULE_VERSION}
 @router.get("/companies/{company_id}",response_model=CompanyOut)
 def company(company_id:str,db:Session=Depends(get_db),_=Depends(current_user)):
     value=db.get(Company,company_id)
